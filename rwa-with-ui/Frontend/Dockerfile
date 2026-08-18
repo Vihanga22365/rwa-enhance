@@ -34,5 +34,8 @@ COPY nginx.conf /etc/nginx/conf.d/app.conf
 # a request for /rwa-enhance/main-<hash>.js maps to this directory on disk.
 COPY --from=build /app/dist/rwa/browser /usr/share/nginx/html/rwa-enhance
 EXPOSE 80
+# 127.0.0.1, not "localhost": the server block listens on IPv4 only, and BusyBox
+# wget resolves localhost to ::1 first, so a localhost probe is refused and the
+# container is reported unhealthy while it is in fact serving fine.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost/rwa-enhance/ >/dev/null 2>&1 || exit 1
+  CMD wget -qO- http://127.0.0.1/rwa-enhance/ >/dev/null 2>&1 || exit 1
