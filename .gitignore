@@ -59,3 +59,7 @@
 # System files
 /Frontend/.DS_Store
 /Frontend/Thumbs.db
+
+# Local-only compose tweaks (e.g. publishing a port for the web service).
+docker-compose.override.yml
+**/docker-compose.override.yml

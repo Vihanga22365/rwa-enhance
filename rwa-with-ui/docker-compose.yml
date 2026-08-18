@@ -1,25 +1,45 @@
-# Production stack for "RWA with UI".
-#   web      -> nginx: serves the Angular SPA + reverse-proxies /api to backend
-#   backend  -> FastAPI/uvicorn (NOT published to the host; internal only)
+# Production stack for "RWA Enhance" on 91.230.110.121, served at /rwa-enhance.
 #
-# Only the web service publishes a port (80). The backend is reachable solely
-# on the private Docker network, which keeps port 8000 and your API keys off the
-# public internet.
+#   backend  -> FastAPI/uvicorn, single worker (in-process session store)
+#   web      -> nginx: serves the Angular SPA under /rwa-enhance/ and proxies
+#               its API calls to the backend
+#
+# PUBLISHES NO PUBLIC PORT. Ports 80 and 443 on this host are already taken
+# (`ss -tulnp`: docker-proxy on both), and the established pattern here is that
+# the `rwa-web-1` nginx owns :80 and routes by path prefix over the external
+# `shared-edge` network:
+#
+#   /                      -> the original RWA SPA   (rwa stack, ~/rwa)
+#   /mrm/                  -> mrm-frontend
+#   /presentation-agent/   -> presentation-agent-frontend
+#   /qa-task-automation/   -> qa-task-automation-frontend
+#   /rwa-enhance/          -> rwa-enhance-frontend           <- this stack
+#
+# The route into rwa-web-1 is installed by deploy/add-route-to-rwa-web.sh.
+# HTTPS on :443 is terminated by presentation-agent-tls-proxy-1, which forwards
+# what it does not own to rwa-web-1, so this app is reachable over both schemes
+# without that proxy being touched.
 #
 # Usage:  cp .env.example .env  &&  edit .env  &&  docker compose up -d --build
+
+# Fixed project name so the stack is identified the same way no matter which
+# directory it was cloned into (the compose file is not at the repo root).
+name: rwa-enhance
 
 services:
   backend:
     build: ./Backend
-    # Local dev builds rwa-backend:latest. In CI/CD, BACKEND_IMAGE is set to the
-    # GHCR image (ghcr.io/<owner>/<repo>-backend:<sha>) so the server pulls it.
-    image: ${BACKEND_IMAGE:-rwa-backend:latest}
+    # Local builds produce rwa-enhance-backend:latest. CI overwrites
+    # BACKEND_IMAGE in the server's .env with the GHCR tag for the exact commit
+    # being deployed.
+    image: ${BACKEND_IMAGE:-rwa-enhance-backend:latest}
+    container_name: rwa-enhance-backend
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      # Frontend is same-origin behind nginx, so this is mostly belt-and-braces.
-      # Set to your public origin(s), comma-separated. Add the https://domain later.
+      # The SPA is same-origin behind nginx, so this is belt-and-braces. It only
+      # matters for a browser calling the API from another origin.
       CORS_ORIGINS: ${CORS_ORIGINS:-http://91.230.110.121}
     expose:
       - "8000"
@@ -30,20 +50,38 @@ services:
       retries: 5
       start_period: 40s
     networks:
-      - rwa
+      - rwa-enhance
 
   web:
-    build: ./Frontend
-    image: ${FRONTEND_IMAGE:-rwa-frontend:latest}
+    build:
+      context: ./Frontend
+      args:
+        # Compiled into the bundle (<base href>), so it is a build argument
+        # rather than runtime configuration. Must match the prefix in
+        # Frontend/nginx.conf and in deploy/rwa-web-route.conf.
+        APP_BASE_PATH: /rwa-enhance/
+    image: ${FRONTEND_IMAGE:-rwa-enhance-frontend:latest}
+    container_name: rwa-enhance-web
     restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy
-    ports:
-      - "80:80"
     networks:
-      - rwa
+      # Internal network, to reach the backend by name.
+      rwa-enhance: {}
+      # Shared cross-app network. The alias is the name rwa-web's nginx proxies
+      # to; it must match the `set $rwa_enhance_upstream ...` line in
+      # deploy/rwa-web-route.conf. An explicit alias is required — every stack
+      # on this host calls its nginx service "web", so the default service-name
+      # alias would collide on the shared network.
+      shared-edge:
+        aliases:
+          - rwa-enhance-frontend
 
 networks:
-  rwa:
+  rwa-enhance:
     driver: bridge
+  # Created and owned by the original rwa stack; referenced here as external so
+  # this app only joins it and never (re)creates it.
+  shared-edge:
+    external: true

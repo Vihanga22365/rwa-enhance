@@ -1,269 +1,233 @@
 # Production Deployment — Contabo VPS (91.230.110.121)
 
-This deploys the app as two Docker containers behind a single nginx entry point:
+Live at **http://91.230.110.121/rwa-enhance/**
+
+Deploys are automatic: push to `master`, GitHub Actions builds both images, pushes
+them to GHCR, and restarts the stack over SSH. Nothing is built on the VPS.
 
 ```
-                   Internet
-                      │  :80  (later :443)
-            ┌─────────▼─────────┐
-            │   web (nginx)     │   serves Angular SPA
-            │   rwa-frontend    │   proxies /api ─┐
-            └───────────────────┘                 │  internal docker network
-            ┌───────────────────┐                 │
-            │ backend (uvicorn) │ ◄───────────────┘  :8000 (not public)
-            │   rwa-backend     │   FastAPI + LangGraph
-            └───────────────────┘
-```
-
-Why this shape: one public port, backend + API keys never exposed, frontend and
-API are same-origin (no CORS headaches, no mixed-content when you add HTTPS),
-and the whole stack comes up / rolls back with one command.
-
----
-
-## 0. Prerequisites (local, one-time)
-
-Commit the new deployment files to your repo and push, so the server can pull:
-
-```bash
-git add Backend/Dockerfile Backend/.dockerignore \
-        Frontend/Dockerfile Frontend/nginx.conf Frontend/.dockerignore \
-        Frontend/src/environments/environment.prod.ts Frontend/angular.json \
-        Backend/app/ Backend/config/ docker-compose.yml .env.example deploy.sh \
-        DEPLOYMENT.md .gitignore
-git commit -m "Add production Docker deployment"
-git push
-```
-
-> If the repo isn't reachable from the server, you can instead copy the folder up
-> with `scp -r` or `rsync` (see Appendix B).
-
----
-
-## 1. First connection & a non-root user
-
-SSH in as root (Contabo emails you the root password):
-
-```bash
-ssh root@91.230.110.121
-```
-
-Create a sudo user and use it from now on (don't run the app as root):
-
-```bash
-adduser deploy
-usermod -aG sudo deploy
-# copy your SSH key so you can log in as deploy
-rsync --archive --chown=deploy:deploy ~/.ssh /home/deploy
-```
-
-Reconnect: `ssh deploy@91.230.110.121`
-
-Recommended hardening in `/etc/ssh/sshd_config` (then `sudo systemctl restart ssh`):
-
-```
-PermitRootLogin no
-PasswordAuthentication no   # only after confirming key login works!
+push to master
+   │
+   ├─ build  (GitHub runner)  Backend image ──┐
+   │                          Frontend image ─┤─► ghcr.io/vihanga22365/rwa-enhance-*
+   │                                          │
+   └─ deploy (ssh to VPS) ─── git reset ──────┴─► docker compose pull && up -d
+                              └─ add-route-to-rwa-web.sh (nginx reload)
 ```
 
 ---
 
-## 2. Install Docker Engine + Compose plugin
+## 1. How this host is laid out
+
+The VPS runs five stacks side by side. **Ports 80 and 443 are already taken**, so
+this app publishes no host port at all. Instead, the `rwa-web-1` nginx owns port
+80 and routes every app by path prefix over the external `shared-edge` Docker
+network:
+
+| Path                   | Upstream (alias on `shared-edge`) | Stack                       |
+| ---------------------- | --------------------------------- | --------------------------- |
+| `/`                    | served by `rwa-web-1` itself       | `~/rwa` (the original RWA)  |
+| `/mrm/`                | `mrm-frontend`                     | `/opt/mrm`                  |
+| `/presentation-agent/` | `presentation-agent-frontend`      | `/opt/presentation-agent`   |
+| `/qa-task-automation/` | `qa-task-automation-frontend`      | `/opt/qa-task-automation`   |
+| `/rwa-enhance/`        | `rwa-enhance-frontend`             | `/opt/rwa-enhance` ← **this** |
+
+HTTPS on `:443` is terminated by `presentation-agent-tls-proxy-1`, which forwards
+what it does not own to `rwa-web-1`. So this app is reachable over both schemes
+without that proxy being touched.
+
+To see what is actually bound at any time:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl git
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-sudo chmod a+r /etc/apt/keyrings/docker.asc
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-  https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-sudo apt-get update
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-# run docker without sudo (log out/in afterwards for it to take effect)
-sudo usermod -aG docker $USER
+sudo ss -tulnp
+docker ps --format 'table {{.Names}}\t{{.Ports}}'
 ```
 
-Verify: `docker --version && docker compose version`
+### The two containers in this stack
+
+| Container             | Image                                      | Published | Reached via                          |
+| --------------------- | ------------------------------------------ | --------- | ------------------------------------ |
+| `rwa-enhance-web`     | `ghcr.io/…/rwa-enhance-frontend:<sha>`     | nothing   | `shared-edge` alias `rwa-enhance-frontend` |
+| `rwa-enhance-backend` | `ghcr.io/…/rwa-enhance-backend:<sha>`      | nothing   | internal network only                |
+
+The backend is never exposed to the host, let alone the internet: the only way
+in is `rwa-enhance-web`'s nginx, which proxies `/rwa-enhance/api/*` to it.
+
+### The sub-path is fixed in four places
+
+`/rwa-enhance/` has to agree across:
+
+1. `Frontend/Dockerfile` — `ARG APP_BASE_PATH`, compiled into `<base href>`
+2. `Frontend/Dockerfile` — the directory the bundle is copied into
+3. `Frontend/nginx.conf` — every `location` block
+4. `deploy/rwa-web-route.conf` — the route installed into `rwa-web-1`
+
+The frontend code itself does **not** hard-code it: `rwa-agent-api.service.ts`
+resolves the API base against `document.baseURI`, so the compiled `<base href>`
+is the single source of truth at runtime.
 
 ---
 
-## 3. Firewall
+## 2. First-time server setup
+
+Only needed once; it has already been done for this app.
 
 ```bash
-sudo apt-get install -y ufw
-sudo ufw allow OpenSSH
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp     # for HTTPS later
-sudo ufw enable
-sudo ufw status
-```
+ssh deploy@91.230.110.121
 
-> Also check the **Contabo control panel firewall** — by default it's open, but if
-> you've enabled it there, allow 22/80/443 too.
+sudo mkdir -p /opt/rwa-enhance
+sudo chown deploy:deploy /opt/rwa-enhance
+git clone https://github.com/Vihanga22365/rwa-enhance.git /opt/rwa-enhance
 
----
-
-## 4. Get the code and set secrets
-
-```bash
-cd ~
-git clone <YOUR_REPO_URL> rwa && cd rwa
-# (or scp the folder up — see Appendix B)
-
+cd /opt/rwa-enhance/rwa-with-ui
 cp .env.example .env
-nano .env        # paste your real OPENAI_API_KEY (and others). Save.
+nano .env            # set OPENAI_API_KEY at minimum
 ```
 
-`.env` must use `KEY=value` with **no spaces** around `=`. It is git-ignored.
+`shared-edge` already exists (the original `rwa` stack created it). Confirm
+rather than recreate — a second, empty network would silently break routing:
+
+```bash
+docker network inspect shared-edge >/dev/null && echo present
+```
 
 ---
 
-## 5. Launch
+## 3. GitHub Actions secrets
+
+Repository → **Settings → Secrets and variables → Actions → Repository secrets**
+(not Variables, not an Environment):
+
+| Secret           | Value                                              |
+| ---------------- | -------------------------------------------------- |
+| `DEPLOY_HOST`    | `91.230.110.121`                                   |
+| `DEPLOY_USER`    | `deploy`                                           |
+| `DEPLOY_SSH_KEY` | the **private** key, `BEGIN`/`END` lines included  |
+| `DEPLOY_PORT`    | `22` (optional — 22 is assumed)                    |
+
+`GITHUB_TOKEN` is provided automatically and is what pushes to GHCR and lets the
+server pull from it.
+
+To mint a fresh key pair for CI:
 
 ```bash
-chmod +x deploy.sh
+ssh-keygen -t ed25519 -C rwa-enhance-ci -f ./rwa-enhance-ci -N ''
+# public half onto the server:
+ssh deploy@91.230.110.121 'cat >> ~/.ssh/authorized_keys' < rwa-enhance-ci.pub
+# private half into DEPLOY_SSH_KEY, then delete your local copy
+```
+
+---
+
+## 4. Day-2 operations
+
+All from `/opt/rwa-enhance/rwa-with-ui`.
+
+```bash
+docker compose ps                       # what is running
+docker compose logs -f backend          # agent traces, LLM errors
+docker compose logs -f web              # nginx access/error
+docker compose restart backend          # after an .env change
+docker compose down                     # stop this app (others unaffected)
+```
+
+Roll back to a previous release without a new build — every deploy pins the
+exact tags in `.env`:
+
+```bash
+sed -i 's#^BACKEND_IMAGE=.*#BACKEND_IMAGE=ghcr.io/vihanga22365/rwa-enhance-backend:<sha>#' .env
+sed -i 's#^FRONTEND_IMAGE=.*#FRONTEND_IMAGE=ghcr.io/vihanga22365/rwa-enhance-frontend:<sha>#' .env
+docker compose up -d
+```
+
+Build on the box instead of via CI (fallback only — competes for memory with the
+other four stacks):
+
+```bash
 ./deploy.sh
 ```
 
-This builds both images and starts the stack. First build takes a few minutes
-(Angular build + Python deps). Then verify:
+### The nginx route
+
+`deploy/add-route-to-rwa-web.sh` installs the `/rwa-enhance/` block into
+`rwa-web-1`'s config and reloads it. It is idempotent and runs on every deploy.
+A reload is not a restart — in-flight requests to the other apps finish
+normally, and nothing on the box goes down.
 
 ```bash
-docker compose ps                  # both services should be "running" / "healthy"
-curl -s http://localhost/health    # -> {"status":"ok"}  (nginx -> backend)
+bash deploy/add-route-to-rwa-web.sh --check   # show the diff, change nothing
+bash deploy/add-route-to-rwa-web.sh           # install / reload
 ```
 
-Open in a browser: **http://91.230.110.121**  (and `http://91.230.110.121/health`)
+**This route lives inside the `rwa-web-1` container, not in a file on the host.**
+Redeploying the *original* `rwa` stack (`~/rwa`) replaces that container and
+wipes the routes for `/mrm/`, `/presentation-agent/`, `/qa-task-automation/`
+**and** `/rwa-enhance/`. Each app reinstalls its own on the next deploy; for this
+one, re-run the script above.
 
-The UI calls `/api/rwa/...` on the same origin; nginx forwards it to the backend.
-
----
-
-## 6. Day-2 operations
+Rollback, if a config edit ever goes wrong:
 
 ```bash
-docker compose logs -f               # tail all logs
-docker compose logs -f backend       # just the API
-docker compose restart backend       # restart one service
-docker compose down                  # stop everything
-./deploy.sh                          # pull + rebuild + restart (normal update)
-./deploy.sh --no-pull                # rebuild from local files without git pull
+docker exec rwa-web-1 sh -c 'ls /etc/nginx/conf.d/app.conf.bak.*'
+docker exec rwa-web-1 sh -c 'cp /etc/nginx/conf.d/app.conf.bak.<STAMP> /etc/nginx/conf.d/app.conf'
+docker exec rwa-web-1 nginx -t && docker exec rwa-web-1 nginx -s reload
 ```
-
-Containers have `restart: unless-stopped`, so they survive reboots and crashes.
 
 ---
 
-## 6b. Automated deploys with GitHub Actions (recommended)
+## 5. Verifying a deploy
 
-Manual `./deploy.sh` builds on the VPS (RAM-hungry). The included workflow
-[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) instead builds the
-images on GitHub's runners, pushes them to **GHCR**, and the VPS only *pulls*:
+The stack publishes no port, so "is it up?" is answered through the router that
+actually serves it:
 
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost/rwa-enhance/
+curl -s http://localhost/rwa-enhance/health              # {"status":"ok"}
+curl -s http://localhost/rwa-enhance/api/rwa/config      # models + issue types
 ```
-push to master ─▶ build backend+frontend ─▶ ghcr.io/<owner>/<repo>-{backend,frontend}:<sha>
-                                          └▶ SSH to VPS ─▶ docker compose pull && up -d
+
+A status code alone proves nothing for the app path: the original RWA app's
+`location /` catch-all answers **200 with its own index.html** for anything
+unrouted, so a missing route looks identical to a working one. Check the title:
+
+```bash
+curl -sL http://localhost/rwa-enhance/ | grep -o '<title>[^<]*</title>'
 ```
 
-Each deploy pins the exact commit SHA (immutable releases + easy rollback).
+And confirm the neighbours still work — a deploy here must never be what breaks
+them:
 
-### One-time setup
-
-1. **Server prep (same as §1–§5)** — Docker installed, repo cloned at `~/rwa`,
-   and `.env` filled with your real keys. You do *not* need to run `./deploy.sh`;
-   Actions will start the stack on the first push.
-
-2. **Create an SSH key pair for CI** (on your machine):
-   ```bash
-   ssh-keygen -t ed25519 -f deploy_key -C "github-actions" -N ""
-   ssh-copy-id -i deploy_key.pub deploy@91.230.110.121   # add public key to server
-   ```
-
-3. **Add repository secrets** (GitHub → Settings → Secrets and variables → Actions):
-
-   | Secret | Value |
-   |---|---|
-   | `DEPLOY_HOST` | `91.230.110.121` |
-   | `DEPLOY_USER` | `deploy` |
-   | `DEPLOY_PORT` | `22` |
-   | `DEPLOY_SSH_KEY` | contents of the **private** `deploy_key` file |
-
-   No registry secret is needed — the workflow uses the built-in `GITHUB_TOKEN`
-   to push to GHCR and to log the server into GHCR during the run.
-
-4. **First run**: push to `master` (or run the workflow manually via
-   *Actions → Build & Deploy → Run workflow*). After the first push, confirm the
-   two packages exist under your GitHub profile → *Packages*.
-
-### Notes
-- If the repo is **private**, its GHCR packages are private too. The in-run
-  `GITHUB_TOKEN` can still pull them during deploy — nothing extra needed. If you
-  ever pull manually on the server, `docker login ghcr.io` with a read PAT first.
-- The deploy step writes `BACKEND_IMAGE`/`FRONTEND_IMAGE` into the server's `.env`
-  so reboots and manual `docker compose` calls reuse the same release.
-- **Rollback**: re-run the workflow for an older commit, or on the server set
-  `BACKEND_IMAGE`/`FRONTEND_IMAGE` in `.env` to a previous `:<sha>` and
-  `docker compose up -d`.
+```bash
+for p in / /mrm/ /presentation-agent/ /qa-task-automation/ /rwa-enhance/; do
+  printf '%-24s %s\n' "$p" "$(curl -s -o /dev/null -w '%{http_code}' http://localhost$p)"
+done
+```
 
 ---
 
-## 7. Add a domain + HTTPS (when ready)
+## 6. Scaling & limitations
 
-The app is already same-origin and proxy-based, so going HTTPS is a small change.
-
-1. Point an `A` record for your domain at `91.230.110.121`.
-2. Add a TLS-terminating proxy. Easiest is **Caddy** (automatic Let's Encrypt):
-   create `Caddyfile`:
-   ```
-   app.example.com {
-       reverse_proxy web:80
-   }
-   ```
-   and add a `caddy` service to `docker-compose.yml` publishing 80/443, then stop
-   publishing 80 from `web`. Caddy fetches and renews certificates automatically.
-   Alternatively use nginx + certbot, or Contabo's load balancer.
-3. Update `.env`: `CORS_ORIGINS=https://app.example.com`, then `./deploy.sh`.
-
-No frontend rebuild is needed for the API URL — it's relative (`/api`).
+- **Sessions are in-process.** `app/api/sessions.py` is a plain dict, so the
+  backend runs a single uvicorn worker on purpose. Adding workers or replicas
+  splits sessions across processes and follow-up questions start losing their
+  context. A shared store (Redis) is the prerequisite for scaling out.
+- **Long requests.** One `/email-submit` walks a whole decision tree — dozens of
+  sequential LLM calls, minutes of wall clock. Timeouts are set generously at
+  both nginx hops (900s in this app's nginx, 3600s at the edge) so the backend is
+  always the component that decides a request has taken too long.
+- **Shared box.** 11 GB RAM across five stacks. That is why CI builds the images
+  and the VPS only pulls them.
 
 ---
 
-## 8. Scaling & limitations (read this)
+## 7. Troubleshooting
 
-- **Single backend worker on purpose.** `app/api/sessions.py` stores sessions in
-  an in-process dict (`_store`). Running multiple uvicorn workers or backend
-  replicas would split sessions across processes and break follow-up calls. To
-  scale horizontally, move sessions to a shared store (e.g. Redis) and then raise
-  `--workers` / add replicas + sticky sessions.
-- **LLM calls are slow.** nginx and the stack are configured with 300s proxy
-  timeouts to accommodate multi-agent runs. Tune in `Frontend/nginx.conf`.
-- **Resources.** LangChain + pandas + the Angular build are memory-hungry to
-  build. Use a Contabo plan with **≥4 GB RAM**; if builds get OOM-killed, build
-  the frontend image locally and `docker save`/`load` it, or add swap.
-
----
-
-## Appendix A — Troubleshooting
-
-| Symptom | Likely cause / fix |
-|---|---|
-| `502 Bad Gateway` on `/api` | backend still starting or crashed → `docker compose logs backend` |
-| UI loads but API 500s | missing/invalid `OPENAI_API_KEY` in `.env` → fix and `./deploy.sh` |
-| Backend healthcheck never passes | check `docker compose logs backend`; confirm `Main Data.xlsx` was copied into the image |
-| Build OOM-killed | low RAM → add swap (`fallocate -l 2G /swapfile ...`) or build elsewhere |
-| Can't reach site | check `ufw status` **and** Contabo panel firewall for port 80 |
-| `.env` values ignored | remove spaces around `=`; values must be `KEY=value` |
-
-## Appendix B — Copy code without git
-
-From your Windows machine (PowerShell), using `scp`:
-
-```powershell
-scp -r "d:\Office Research\RWA with UI" deploy@91.230.110.121:~/rwa
-```
-
-Exclude `node_modules`, `.venv`, `.angular`, `dist` first to keep it small, or
-just let `.dockerignore` handle them at build time (they won't be used anyway).
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `/rwa-enhance/` shows the *original* RWA app | route not installed in `rwa-web-1` | `bash deploy/add-route-to-rwa-web.sh` |
+| `502` on `/rwa-enhance/` | `rwa-enhance-web` down, or not on `shared-edge` | `docker compose ps`; `docker network inspect shared-edge` |
+| `502` only on `/rwa-enhance/api/…` | backend unhealthy | `docker compose logs backend` |
+| Blank page, 404s for `main-*.js` | bundle built with the wrong `--base-href` | check `APP_BASE_PATH` reached the build; `docker exec rwa-enhance-web grep '<base' /usr/share/nginx/html/rwa-enhance/index.html` |
+| API calls go to `/api/rwa/…` (no prefix) | stale bundle from before the sub-path change | hard-reload; `index.html` is served `no-store`, assets are hashed |
+| Deploy fails at "Check the deploy secrets are set" | missing Actions secret | see §3 |
+| `shared-edge network missing — aborting` | the original `rwa` stack was removed | that breaks `/mrm/` and the others too; bring `~/rwa` back up first |

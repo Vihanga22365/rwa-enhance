@@ -82,4 +82,29 @@ cp .env.example .env   # add OPENAI_API_KEY
 docker compose up -d --build
 ```
 
-See [DEPLOYMENT.md](DEPLOYMENT.md).
+Two things differ from a plain single-app stack, both because the production
+host runs several apps behind one nginx on port 80: the SPA is served under
+**`/rwa-enhance/`** rather than `/`, and the `web` service publishes **no port**
+(that nginx reaches it over the external `shared-edge` network instead). To run
+it locally:
+
+```bash
+docker network create shared-edge                     # once
+docker compose up -d --build
+docker compose exec web wget -qO- http://127.0.0.1/rwa-enhance/health
+```
+
+To reach it from a browser, publish a port on the side — this keeps
+`docker-compose.yml` matching production:
+
+```bash
+# docker-compose.override.yml  (git-ignored)
+services:
+  web:
+    ports: ["8080:80"]
+```
+
+then open `http://localhost:8080/rwa-enhance/`.
+
+Production deploys are automatic on push to `master`. See
+[DEPLOYMENT.md](DEPLOYMENT.md).

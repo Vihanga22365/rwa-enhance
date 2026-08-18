@@ -1,0 +1,180 @@
+name: Build & Deploy to Contabo
+
+# Build both images on GitHub's runners (plenty of RAM), push them to GitHub
+# Container Registry, then SSH into the VPS and pull + restart. The VPS never
+# builds anything itself — an Angular build plus a LangChain dependency tree
+# would compete for memory with the four other stacks already running there.
+#
+# The app is served at http://91.230.110.121/rwa-enhance/ — see
+# rwa-with-ui/docker-compose.yml for how the path routing on that host works.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch: {}
+
+# Don't let two deploys run at once; let an in-flight deploy finish.
+concurrency:
+  group: deploy-rwa-enhance
+  cancel-in-progress: false
+
+env:
+  # The public sub-path. Compiled into the frontend bundle here, and matched by
+  # rwa-with-ui/Frontend/nginx.conf and rwa-with-ui/deploy/rwa-web-route.conf.
+  APP_BASE_PATH: /rwa-enhance/
+  # Where the repo is checked out on the server.
+  DEPLOY_DIR: /opt/rwa-enhance
+  # Directory inside the repo that holds docker-compose.yml.
+  STACK_SUBDIR: rwa-with-ui
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write          # allow pushing images to GHCR
+    outputs:
+      backend_image: ${{ steps.names.outputs.backend_image }}
+      frontend_image: ${{ steps.names.outputs.frontend_image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute lowercase image names
+        id: names
+        run: |
+          REPO="${GITHUB_REPOSITORY,,}"   # GHCR requires lowercase names
+          echo "backend_image=ghcr.io/${REPO}-backend"  >> "$GITHUB_OUTPUT"
+          echo "frontend_image=ghcr.io/${REPO}-frontend" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./rwa-with-ui/Backend
+          push: true
+          tags: |
+            ${{ steps.names.outputs.backend_image }}:latest
+            ${{ steps.names.outputs.backend_image }}:${{ github.sha }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build & push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./rwa-with-ui/Frontend
+          push: true
+          # The sub-path is compiled into the bundle's <base href>, so it is a
+          # build argument rather than runtime configuration.
+          build-args: |
+            APP_BASE_PATH=${{ env.APP_BASE_PATH }}
+          tags: |
+            ${{ steps.names.outputs.frontend_image }}:latest
+            ${{ steps.names.outputs.frontend_image }}:${{ github.sha }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      # Checked before the SSH action runs, because an unset secret reaches it
+      # as an empty string and it reports that as "missing server host" — which
+      # says nothing about which secret is missing or where to set it.
+      - name: Check the deploy secrets are set
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          missing=""
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Not set as Actions secrets:$missing"
+            echo "Add them under Settings -> Secrets and variables -> Actions ->"
+            echo "'Repository secrets' (not Variables, not an Environment):"
+            echo "  DEPLOY_HOST     91.230.110.121"
+            echo "  DEPLOY_USER     deploy"
+            echo "  DEPLOY_SSH_KEY  the whole private key, BEGIN/END lines included"
+            echo "  DEPLOY_PORT     22   (optional - 22 is assumed)"
+            exit 1
+          fi
+          echo "Deploying to $DEPLOY_USER@$DEPLOY_HOST"
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BACKEND_IMAGE: ${{ needs.build.outputs.backend_image }}:${{ github.sha }}
+          FRONTEND_IMAGE: ${{ needs.build.outputs.frontend_image }}:${{ github.sha }}
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          STACK_SUBDIR: ${{ env.STACK_SUBDIR }}
+          BRANCH: ${{ github.ref_name }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          # An unset secret arrives as an empty string and overrides the
+          # action's own default, so the fallback has to be spelled out here.
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          envs: GHCR_USER,GHCR_TOKEN,BACKEND_IMAGE,FRONTEND_IMAGE,DEPLOY_DIR,STACK_SUBDIR,BRANCH
+          # Long enough to cover an image pull plus the backend's 40s health
+          # start period; the action's 60s default would time out mid-deploy.
+          command_timeout: 20m
+          script: |
+            set -euo pipefail
+            cd "$DEPLOY_DIR"
+
+            # Bring the checkout up to date so compose reads this commit's
+            # docker-compose.yml and nginx route snippet, not the ones from the
+            # last deploy.
+            git fetch --prune origin
+            git reset --hard "origin/$BRANCH"
+
+            # Owned by the original rwa stack and shared with /mrm,
+            # /presentation-agent and /qa-task-automation. If it is gone, those
+            # apps are broken too — fail loudly rather than creating a second,
+            # empty one that nothing else is attached to.
+            docker network inspect shared-edge >/dev/null 2>&1 || {
+              echo "shared-edge network missing - aborting."; exit 1;
+            }
+
+            # Authenticate to GHCR (token is valid for the duration of this run).
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+            cd "$STACK_SUBDIR"
+
+            # Pin the exact image tags into .env so every later `docker compose`
+            # command - and every reboot - uses this release. Secrets untouched.
+            touch .env
+            sed -i '/^BACKEND_IMAGE=/d;/^FRONTEND_IMAGE=/d' .env
+            printf 'BACKEND_IMAGE=%s\nFRONTEND_IMAGE=%s\n' "$BACKEND_IMAGE" "$FRONTEND_IMAGE" >> .env
+
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker image prune -f
+            docker compose ps
+
+            # Idempotent: installs the /rwa-enhance route into the rwa-web-1
+            # nginx the first time, and on later runs only reloads it, which
+            # re-resolves this stack's new container address. Run through bash
+            # explicitly so a lost exec bit cannot break the deploy.
+            bash deploy/add-route-to-rwa-web.sh
+
+            # This stack publishes no public port, so "is it up?" is answered
+            # through the router that actually serves it. Also re-checks the
+            # neighbours: a deploy here must never be what breaks them.
+            for path in / /mrm/ /presentation-agent/ /qa-task-automation/ /rwa-enhance/; do
+              printf '%-24s %s\n' "$path" \
+                "$(curl -s -o /dev/null -w '%{http_code}' "http://localhost$path")"
+            done
