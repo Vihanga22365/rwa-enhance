@@ -1,0 +1,49 @@
+# Production stack for "RWA with UI".
+#   web      -> nginx: serves the Angular SPA + reverse-proxies /api to backend
+#   backend  -> FastAPI/uvicorn (NOT published to the host; internal only)
+#
+# Only the web service publishes a port (80). The backend is reachable solely
+# on the private Docker network, which keeps port 8000 and your API keys off the
+# public internet.
+#
+# Usage:  cp .env.example .env  &&  edit .env  &&  docker compose up -d --build
+
+services:
+  backend:
+    build: ./Backend
+    # Local dev builds rwa-backend:latest. In CI/CD, BACKEND_IMAGE is set to the
+    # GHCR image (ghcr.io/<owner>/<repo>-backend:<sha>) so the server pulls it.
+    image: ${BACKEND_IMAGE:-rwa-backend:latest}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Frontend is same-origin behind nginx, so this is mostly belt-and-braces.
+      # Set to your public origin(s), comma-separated. Add the https://domain later.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://91.230.110.121}
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - rwa
+
+  web:
+    build: ./Frontend
+    image: ${FRONTEND_IMAGE:-rwa-frontend:latest}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    networks:
+      - rwa
+
+networks:
+  rwa:
+    driver: bridge

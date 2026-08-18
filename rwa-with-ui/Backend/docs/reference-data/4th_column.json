@@ -1,0 +1,26 @@
+[
+    {
+      "COB_DT": "30-May-25",
+      "RUN_ID": "DSFT_SFT_DA_MONTHLY_BOS",
+      "PORTFOLIO_ID": "346640004",
+      "TRANSACTION_ID": "451630000003026174"
+    },
+    {
+      "COB_DT": "30-May-25",
+      "RUN_ID": "DSFT_SFT_DA_MONTHLY_BOS",
+      "PORTFOLIO_ID": "346212176",
+      "TRANSACTION_ID": "451630000003026174"
+    },
+    {
+      "COB_DT": "30-May-25",
+      "RUN_ID": "DSFT_SFT_DA_MONTHLY_BOS",
+      "PORTFOLIO_ID": "329580088",
+      "TRANSACTION_ID": "206300000002810148"
+    },
+    {
+      "COB_DT": "30-May-25",
+      "RUN_ID": "DSFT_SFT_DA_MONTHLY_BOS",
+      "PORTFOLIO_ID": "329610094",
+      "TRANSACTION_ID": "206300000002810148"
+    }
+  ]

@@ -1,0 +1,95 @@
+# =====================================================================
+#  LLM configuration  --  the single place to change model + thinking level
+# =====================================================================
+#
+#  The API key is NOT here. Put it in Backend/.env (git-ignored):
+#      OPENAI_API_KEY=sk-...
+#
+#  Everything under `defaults` applies to every agent. Anything under
+#  `roles.<name>` overrides `defaults` for that one agent only. A role that
+#  sets nothing simply inherits the defaults.
+#
+#  Any value left as `null` (or removed) is NOT sent to the API at all, so the
+#  model's own default applies. This matters for reasoning models, which reject
+#  `temperature` outright -- leave it null unless you switch to a model that
+#  accepts it.
+#
+#  After editing, sanity-check the settings against the live API with:
+#      python -m app.llm.check
+# ---------------------------------------------------------------------
+
+provider: openai
+
+defaults:
+  # ---- Which model -------------------------------------------------
+  # Change this one line to switch models for the whole application.
+  model: gpt-5.6-terra
+
+  # ---- Which OpenAI endpoint ---------------------------------------
+  #   responses         -> /v1/responses          (required by reasoning models)
+  #   chat_completions  -> /v1/chat/completions   (classic chat models)
+  #
+  # Reasoning models reject `reasoning_effort` together with function tools on
+  # /v1/chat/completions, and the orchestrator and table agents both use tools.
+  # Leave this on `responses` unless you switch to a classic model such as
+  # gpt-4o, in which case use `chat_completions`.
+  api: responses
+
+  # ---- Thinking / reasoning level ----------------------------------
+  reasoning:
+    # How hard the model thinks before answering.
+    #   none | minimal | low | medium | high
+    # Higher = better multi-step decisions, slower and more expensive.
+    effort: medium
+
+    # Whether the API returns a summary of the model's reasoning.
+    #   null (off) | auto | concise | detailed
+    summary: null
+
+  # ---- Output shape ------------------------------------------------
+  # Length/detail of the answer: null | low | medium | high
+  verbosity: null
+
+  # Sampling temperature. Reasoning models reject this -- keep it null for
+  # them. For a classic chat model (e.g. gpt-4o) set 0 for deterministic runs.
+  temperature: null
+
+  # Hard cap on output tokens. null = model default.
+  max_tokens: null
+
+  # ---- Transport ---------------------------------------------------
+  timeout_seconds: 180
+  max_retries: 3
+
+  # Escape hatch: any extra keyword passed straight through to the model.
+  # Use only for parameters not covered above.
+  extra_params: {}
+
+# ---------------------------------------------------------------------
+#  Per-agent overrides.
+#
+#  classifier    -- maps the inbound email to one of the known issue types.
+#  orchestrator  -- walks the decision tree: picks the next step, reads the
+#                   fetched values, decides pass/fail and where to branch.
+#                   This is the agent that benefits most from thinking budget.
+#  table_agent   -- the per-table pandas agents that write and run the query
+#                   that pulls one field value. Mechanical work.
+#  conclusion    -- writes the 2-3 sentence summary shown in the UI header.
+# ---------------------------------------------------------------------
+roles:
+  classifier:
+    reasoning:
+      effort: low
+
+  orchestrator:
+    reasoning:
+      effort: medium
+
+  table_agent:
+    reasoning:
+      effort: low
+
+  conclusion:
+    reasoning:
+      effort: low
+    verbosity: low

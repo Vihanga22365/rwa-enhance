@@ -1,0 +1,227 @@
+<section class="space-y-6">
+  <!-- Summary cards -->
+  <div class="grid grid-cols-1 gap-5 md:grid-cols-3">
+    @for (card of summaryCards; track card.title) {
+      <div
+        [class]="
+          'rounded-xl2 bg-white border border-l-4 px-6 py-6 shadow-[0_10px_20px_rgba(15,23,42,0.05)] min-h-[156px] flex flex-col justify-between ' +
+          card.accentBorderClass
+        "
+      >
+        <div class="flex items-center justify-between">
+          <div class="text-[13px] font-medium text-slate-500">
+            {{ card.title }}
+          </div>
+          <span
+            class="rounded-full px-2 py-0.5 text-[12px] font-semibold"
+            [class]="
+              'rounded-full px-2 py-0.5 text-[12px] font-semibold ' +
+              card.badgeClass
+            "
+          >
+            {{ card.badge }}
+          </span>
+        </div>
+
+        <div class="mt-3 text-[34px] font-medium tracking-tight text-slate-900">
+          {{ card.value }}
+        </div>
+
+        <div
+          class="mt-2 flex items-center gap-2 text-[13px]"
+          [class]="
+            'mt-2 flex items-center gap-2 text-[13px] ' + card.trendClass
+          "
+        >
+          @if (card.indicator !== "none") {
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              @if (card.indicatorDirection === "down") {
+                <path
+                  d="M11 17h6v-6h-2v2.59l-4.3-4.3-2 2-4.7-4.7-1.4 1.42 6.1 6.1 2-2 2.88 2.88H11V17z"
+                />
+              } @else {
+                <path
+                  d="M11 3h6v6h-2V6.41l-4.3 4.3-2-2-4.7 4.7-1.4-1.42 6.1-6.1 2 2 2.88-2.88H11V3z"
+                />
+              }
+            </svg>
+          }
+          <span class="font-semibold">{{ card.footnote }}</span>
+        </div>
+      </div>
+    }
+  </div>
+
+  <!-- Recent changes table/card -->
+  <div class="rounded-xl2 bg-white border border-slate-200/80">
+    <div
+      class="flex flex-col gap-4 px-6 py-5 sm:flex-row sm:items-center sm:justify-between"
+    >
+      <div>
+        <div class="text-[18px] font-semibold text-slate-900">
+          Recent RWA Changes
+        </div>
+        <div class="mt-1 text-[13px] text-slate-500">
+          Material variances detected in the last 48 hours
+        </div>
+      </div>
+
+      <button
+        type="button"
+        class="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-[13px] font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
+      >
+        <svg
+          class="h-4 w-4 text-slate-500"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path
+            fill-rule="evenodd"
+            d="M8.5 3a5.5 5.5 0 104.17 9.04l2.64 2.64a1 1 0 001.42-1.42l-2.64-2.64A5.5 5.5 0 008.5 3zM5 8.5a3.5 3.5 0 117 0 3.5 3.5 0 01-7 0z"
+            clip-rule="evenodd"
+          />
+        </svg>
+        Search Trades
+      </button>
+    </div>
+
+    <div class="px-4 pb-5 sm:px-6">
+      <div class="flex flex-col gap-3">
+        @for (row of rows; track row.tradeId) {
+          <div class="rounded-xl border border-slate-200/80 bg-white px-5 py-4">
+            <div
+              class="grid grid-cols-1 gap-3 md:grid-cols-[1.15fr_1.15fr_1.8fr_0.9fr_auto] md:items-center"
+            >
+              <div>
+                <div class="text-[12px] font-semibold text-slate-900">
+                  {{ row.tradeId }}
+                </div>
+                <div class="mt-0.5 text-[12px] text-slate-500">
+                  {{ row.product }}
+                </div>
+              </div>
+
+              <div>
+                <div class="text-[12px] font-semibold text-slate-700">
+                  {{ row.counterparty }}
+                </div>
+                <div class="mt-0.5 text-[12px] text-slate-500">
+                  {{ row.date }}
+                </div>
+              </div>
+
+              <div class="flex items-center gap-3">
+                <div>
+                  <div class="text-[11px] font-semibold text-slate-400">
+                    Before
+                  </div>
+                  <div class="mt-1 text-[13px] font-semibold text-slate-700">
+                    {{ row.before }}
+                  </div>
+                </div>
+                <svg
+                  class="h-4 w-4 text-slate-400"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path
+                    fill-rule="evenodd"
+                    d="M12.293 5.293a1 1 0 011.414 0l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-2.293-2.293a1 1 0 010-1.414z"
+                    clip-rule="evenodd"
+                  />
+                </svg>
+                <div>
+                  <div class="text-[11px] font-semibold text-slate-400">
+                    After
+                  </div>
+                  <div class="mt-1 text-[13px] font-semibold text-slate-700">
+                    {{ row.after }}
+                  </div>
+                </div>
+              </div>
+
+              <div
+                [class]="
+                  'flex items-start gap-1.5 ' + getDeltaClasses(row.direction)
+                "
+              >
+                <svg
+                  class="mt-0.5 h-4 w-4"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  @if (row.direction === "up") {
+                    <!-- Trending up-right (matches Figma) -->
+                    <path
+                      d="M11 3h6v6h-2V6.41l-4.3 4.3-2-2-4.7 4.7-1.4-1.42 6.1-6.1 2 2 2.88-2.88H11V3z"
+                    />
+                  } @else {
+                    <!-- Trending down-right (matches Figma) -->
+                    <path
+                      d="M11 17h6v-6h-2v2.59l-4.3-4.3-2 2-4.7-4.7-1.4 1.42 6.1 6.1 2-2 2.88 2.88H11V17z"
+                    />
+                  }
+                </svg>
+                <div class="leading-tight">
+                  <div class="text-[13px] font-semibold">{{ row.delta }}</div>
+                  <div class="mt-0.5 text-[12px] opacity-80">
+                    {{ row.deltaPct }}
+                  </div>
+                </div>
+              </div>
+
+              <div class="md:justify-self-start">
+                <button
+                  type="button"
+                  class="w-full rounded-lg bg-[#2563EB] px-4 py-2 text-[13px] font-semibold text-white shadow-sm hover:bg-[#1D4ED8] md:w-auto"
+                >
+                  Explain Change
+                </button>
+              </div>
+            </div>
+          </div>
+        }
+      </div>
+    </div>
+  </div>
+
+  <!-- How it works banner -->
+  <div class="rounded-xl2 border border-[#B7D7FF] bg-[#EEF6FF] px-5 py-4">
+    <div class="flex items-start gap-3">
+      <div class="mt-0.5">
+        <svg
+          class="h-5 w-5 text-[#2563EB]"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path
+            fill-rule="evenodd"
+            d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zm-9-1a1 1 0 112 0v5a1 1 0 11-2 0V9zm1-4a1.25 1.25 0 100 2.5A1.25 1.25 0 0010 5z"
+            clip-rule="evenodd"
+          />
+        </svg>
+      </div>
+
+      <div>
+        <div class="text-[12px] font-semibold text-slate-900">
+          How RWA Intelligence Works
+        </div>
+        <div class="mt-1 text-[12px] text-slate-600">
+          Our AI engine continuously monitors your portfolio, automatically
+          detecting RWA variances and analyzing root causes based on Basel III
+          rules and {{ constants.companyShortName }} business logic. Click any
+          trade above to see a detailed explanation.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>

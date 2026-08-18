@@ -1,0 +1,19 @@
+# Keep the build context small and never bake secrets / local venvs into the image.
+.venv/
+__pycache__/
+*.py[oc]
+.env
+.env.*
+!.env.example
+.git/
+.gitignore
+~$*.xlsx
+
+# Not needed at runtime.
+legacy/
+scripts/
+docs/sample-emails/
+docs/reference-data/
+*.md
+!README.md
+.python-version

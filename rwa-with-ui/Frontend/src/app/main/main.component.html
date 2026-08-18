@@ -1,0 +1,32 @@
+<div class="flex h-screen flex-col overflow-hidden bg-citi-page">
+  <app-header />
+
+  <main
+    class="w-full flex-1 px-6 sm:px-8 lg:px-10"
+    [class.py-8]="!isRwaRoute"
+    [class.py-4]="isRwaRoute"
+    [class.overflow-auto]="!isRwaRoute"
+    [class.overflow-hidden]="isRwaRoute"
+  >
+    <router-outlet />
+  </main>
+
+  @if (showFab) {
+    <a
+      routerLink="/rwa-agent"
+      class="fixed bottom-6 right-6 grid h-14 w-14 place-items-center rounded-full bg-[#2563EB] text-white shadow-lg shadow-blue-500/20 hover:bg-[#1D4ED8] focus:outline-none focus:ring-4 focus:ring-blue-200"
+      aria-label="Open RWA Agent"
+    >
+      <svg
+        class="h-6 w-6"
+        viewBox="0 0 24 24"
+        fill="currentColor"
+        aria-hidden="true"
+      >
+        <path
+          d="M4 4h16a2 2 0 012 2v10a2 2 0 01-2 2H8l-4 4V6a2 2 0 012-2zm4 6h8v2H8v-2zm0-4h12v2H8V6z"
+        />
+      </svg>
+    </a>
+  }
+</div>
