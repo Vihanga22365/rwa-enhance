@@ -1,4 +1,3 @@
 export const APP_CONSTANTS = {
-  companyName: 'Wiki RWA Intelligence',
-  companyShortName: 'Wiki',
+  companyName: 'RWA Intelligence',
 } as const;
